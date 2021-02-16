@@ -7,7 +7,6 @@ namespace FacturaScripts\Plugins\POS\Controller;
 
 use FacturaScripts\Core\Base\Controller;
 use FacturaScripts\Core\Model\Serie;
-use FacturaScripts\Dinamic\Lib\AssetManager;
 use FacturaScripts\Dinamic\Lib\POS\PrintProcessor;
 use FacturaScripts\Dinamic\Lib\POS\SalesDataGrid;
 use FacturaScripts\Dinamic\Lib\POS\SalesProcessor;
@@ -25,9 +24,26 @@ use function json_encode;
  */
 class POS extends Controller
 {
-    public $cliente;
+
+    /**
+     * @var Cliente
+     */
+    public $customer;
+
+    /**
+     * @var FormaPago
+     */
     public $formaPago;
+
+    /**
+     * @var SalesSession
+     */
     public $session;
+
+
+    /**
+     * @var Serie
+     */
     public $serie;
 
     /**
@@ -51,7 +67,7 @@ class POS extends Controller
         if (false === $this->execPreviusAction($action)) return;
 
         // Init necesary stuff
-        $this->cliente = new Cliente();
+        $this->customer = new Cliente();
         $this->formaPago = new FormaPago();
         $this->serie = new Serie();
 
@@ -71,19 +87,19 @@ class POS extends Controller
     {
         switch ($action) {
             case 'custom-search':
-                $this->searchbyText();
+                $this->searchText();
                 return false;
 
             case 'barcode-search':
-                $this->searchbyBarcode();
+                $this->searchBarcode();
                 return false;
 
             case 'recalculate-document':
-                $this->recalculateDocument();
+                $this->recalculateTransaction();
                 return false;
 
             case 'resume-document':
-                $this->resumeDocument();
+                $this->resumeTransaction();
                 return false;
 
             default:
@@ -91,7 +107,7 @@ class POS extends Controller
         }
     }
 
-    private function searchbyText()
+    private function searchText()
     {
         $query = $this->request->request->get('query');
         $target = $this->request->request->get('target');
@@ -109,21 +125,23 @@ class POS extends Controller
         $this->response->setContent(json_encode($result));
     }
 
-    private function searchbyBarcode()
+    private function searchBarcode()
     {
         $query = $this->request->request->get('query');
         $result = (new Variante())->codeModelSearch($query, 'referencia');
 
-        $this->response->setContent(json_encode($result));
+        $response = $result ? $result[0] : false;
+
+        $this->response->setContent(json_encode($response));
     }
 
-    private function recalculateDocument()
+    private function recalculateTransaction()
     {
         $data = $this->request->request->all();
         $modelName = 'FacturaCliente';
 
         $salesProcessor = new SalesProcessor($modelName, $data);
-        $result = $salesProcessor->recalculateDocument();
+        $result = $salesProcessor->recalculate();
 
         $this->response->setContent($result);
     }
@@ -143,16 +161,16 @@ class POS extends Controller
             case 'open-session':
                 $idterminal = $this->request->request->get('terminal', '');
                 $amount = $this->request->request->get('saldoinicial', 0);
-                $this->session->openSession($idterminal, $amount);
+                $this->session->open($idterminal, $amount);
                 break;
 
             case 'open-terminal':
                 $idterminal = $this->request->request->get('terminal', '');
-                $this->session->getTerminal($idterminal);
+                $this->session->terminal($idterminal);
                 break;
 
             case 'pause-document':
-                $this->pauseDocument();
+                $this->holdTransaction();
                 break;
 
             case 'print-cashup':
@@ -160,7 +178,7 @@ class POS extends Controller
                 break;
 
             case 'save-document':
-                $this->processDocument();
+                $this->saveTransaction();
                 break;
 
             default:
@@ -171,7 +189,7 @@ class POS extends Controller
     private function closeSession()
     {
         $cash = $this->request->request->get('cash');
-        $this->session->closeSession($cash);
+        $this->session->close($cash);
 
         $this->printCashup();
     }
@@ -181,7 +199,7 @@ class POS extends Controller
      *
      * @return void
      */
-    private function pauseDocument()
+    private function holdTransaction()
     {
         $data = $this->request->request->all();
         $modelName = 'OperacionPausada';
@@ -189,7 +207,7 @@ class POS extends Controller
         if (false === $this->validateSaveRequest($data)) return;
 
         $salesProcessor = new SalesProcessor($modelName, $data);
-        if ($salesProcessor->pauseDocument()) {
+        if ($salesProcessor->saveDocument(true)) {
             $this->toolBox()->i18nLog()->info('operation-is-paused');
         }
     }
@@ -199,22 +217,24 @@ class POS extends Controller
      *
      * @return void
      */
-    protected function processDocument()
+    protected function saveTransaction()
     {
         $data = $this->request->request->all();
         $modelName = $data['tipo-documento'];
         $pausada = $data['idpausada'];
 
+        $transactionModel = $this->request->request->get('tipo-documento', 'FacturaCliente');
+
         if (false === $this->validateSaveRequest($data)) return;
 
-        $salesProcessor = new SalesProcessor($modelName, $data);
+        $salesProcessor = new SalesProcessor($transactionModel, $data);
         if ($salesProcessor->saveDocument()) {
             $document = $salesProcessor->getDocument();
-            $payments[] = $salesProcessor->getPaymentsData();
+            $payments[] = $salesProcessor->getPayments();
 
-            $this->session->recordOperation($document);
+            $this->session->storeOperation($document);
             $this->session->savePayments($payments);
-            $this->session->updatePausedOperation($pausada);
+            $this->session->updatePausedTransaction($pausada);
             $this->printTicket($document);
         }
     }
@@ -225,10 +245,11 @@ class POS extends Controller
      */
     protected function validateSaveRequest($data)
     {
-        if (!$this->permissions->allowUpdate) {
+        if (false === $this->permissions->allowUpdate) {
             $this->toolBox()->i18nLog()->warning('not-allowed-modify');
             return false;
         }
+
         $token = $data['token'];
         if (!empty($token) && $this->multiRequestProtection->tokenExist($token)) {
             $this->toolBox()->i18nLog()->warning('duplicated-request');
@@ -242,7 +263,7 @@ class POS extends Controller
      */
     private function printCashup()
     {
-        $ticketWidth = $this->session->getTerminal()->anchopapel;
+        $ticketWidth = $this->session->terminal()->anchopapel;
         if (PrintProcessor::printCashup($this->session->getArqueo(), $this->empresa, $ticketWidth)) {
             $values = [
                 '%ticket%' => 'Cierre caja',
@@ -261,7 +282,7 @@ class POS extends Controller
      */
     protected function printTicket($document)
     {
-        $ticketWidth = $this->session->getTerminal()->anchopapel;
+        $ticketWidth = $this->session->terminal()->anchopapel;
         if (PrintProcessor::printDocument($document, $ticketWidth)) {
             $values = [
                 '%ticket%' => $document->codigo,
@@ -295,9 +316,27 @@ class POS extends Controller
      *
      * @return string
      */
-    public function getCashPaymentMethod()
+    public function cashPaymentMethod(): string
     {
         return $this->toolBox()->appSettings()->get('pointofsale', 'fpagoefectivo');
+    }
+
+    /**
+     * Returns all available payment methods.
+     *
+     * @return FormaPago[]
+     */
+    public function availablePaymentMethods(): array
+    {
+        $settings = $this->toolBox()->appSettings();
+        $formasPago = [];
+
+        $formasPagoCodeList = explode('|', $settings->get('pointofsale', 'formaspago'));
+        foreach ($formasPagoCodeList as $value) {
+            $formasPago[] = (new FormaPago())->get($value);
+        }
+
+        return $formasPago;
     }
 
     /**
@@ -321,28 +360,34 @@ class POS extends Controller
     }
 
     /**
-     * Returns a random token to use as transaction id and avoid multisubmit request.
+     * Returns a random token to use as transaction id.
      *
      * @return string
      */
-    public function getRandomToken()
+    public function requestToken()
     {
         return $this->multiRequestProtection->newToken();
     }
 
-    public function getCustomField()
+    public function customFieldList() : array
     {
-        $dir = FS_FOLDER . '/Dinamic/View/POS/Block/CustomField/';
-        return array_diff(scandir($dir), array('..', '.'));
+        $path = FS_FOLDER . '/Dinamic/View/POS/Block/CustomField/';
+        $list = scandir($path);
+
+        if (false !== $list) {
+            return array_diff($list, array('..', '.'));
+        }
+
+        return [];
     }
 
     /**
      * Load a paused document
      */
-    private function resumeDocument()
+    private function resumeTransaction()
     {
         $code = $this->request->request->get('code', '');
-        $result = $this->session->loadPausedOperation($code);
+        $result = $this->session->loadPausedTransaction($code);
 
         $this->response->setContent($result);
     }

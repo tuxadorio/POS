@@ -1,65 +1,62 @@
-import * as POS from "./ShoppingCartTools";
 /**
  * This file is part of POS plugin for FacturaScripts
- * Copyright (C) 2020 Juan José Prieto Dzul <juanjoseprieto88@gmail.com>
+ * Copyright (C) 2018-2021 Juan José Prieto Dzul <juanjoseprieto88@gmail.com>
  */
-export var payments = [];
-export var total = 0;
-export var cashMethod = false;
-
-export function setPayment(amount, method) {
-    if (false === isSetCashMethod() || false === isSetTotal()) {
-        return false;
+export default class Checkout {
+    constructor(total = 0, cashMethod = "") {
+        this.cashMethod = cashMethod;
+        this.change = 0;
+        this.total = total;
+        this.payments = [];
+        this.payment = 0;
     }
 
-    let change = (amount - total) || 0;
-    if (method !== cashMethod) {
-        if (change > 0) {
-            change = 0;
-            amount = total;
+    recalculatePayment(amount, method) {
+        this.change = (amount - this.total) || 0;
+        this.payment = amount;
+
+        if (method !== this.cashMethod) {
+            if (this.change > 0) {
+                this.change = 0;
+                this.payment = this.total;
+            }
         }
+
+        return this.change;
     }
 
-    payments.push({amount: amount, method:method});
-    return change;
-}
+    setPayment(amount, method) {
+        this.change = (amount - this.total) || 0;
+        if (method !== this.cashMethod) {
+            if (this.change > 0) {
+                this.change = 0;
+                amount = this.total;
+            }
+        }
 
-function getPaymentAmount(method) {
-    let total = 0;
+        this.payments.push({amount: amount, method:method});
+        return this.change;
+    }
 
-    payments.forEach(element => function () {
-        if (element.method === method) {
+    getPaymentAmount(method) {
+        let total = 0;
+
+        this.payments.forEach(element => function () {
+            if (element.method === method) {
+                total += element.amount;
+            }
+        });
+
+        return total;
+    }
+
+    getPaymentsTotal() {
+        let total = 0;
+
+        this.payments.forEach(element => function () {
             total += element.amount;
-        }
-    });
+        });
 
-    return total;
-}
-
-function getPaymentsTotal() {
-    let total = 0;
-
-    payments.forEach(element => function () {
-        total += element.amount;
-    });
-
-    return total;
-}
-
-/*function getPaymentsTotal() {
-    $scope.sum = function(items, prop){
-        return items.reduce( function(a, b){
-            return a + b[prop];
-        }, 0);
-    };
-
-    $scope.travelerTotal = $scope.sum($scope.traveler, 'Amount');
-}*/
-
-function isSetCashMethod() {
-    return false !== cashMethod;
-}
-
-function isSetTotal() {
-    return total > 0;
+        return total;
+    }
 }

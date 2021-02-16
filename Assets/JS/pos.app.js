@@ -1,10 +1,9 @@
 /**
  * This file is part of POS plugin for FacturaScripts
- * Copyright (C) 2020 Juan José Prieto Dzul <juanjoseprieto88@gmail.com>
+ * Copyright (C) 2018-2021 Juan José Prieto Dzul <juanjoseprieto88@gmail.com>
  */
-
 import * as POS from './POS/ShoppingCartTools.js';
-import * as Checkout from './POS/Checkout.js';
+import Checkout from './POS/Checkout.js';
 import ShoppingCart from "./POS/ShoppingCart.js";
 
 // Template variables
@@ -19,10 +18,10 @@ const cartContainer = document.getElementById('cartContainer');
 const customerSearchResult = document.getElementById('customerSearchResult');
 const productSearchResult = document.getElementById('productSearchResult');
 const salesForm = document.getElementById("salesDocumentForm");
-const stepper = new Stepper(document.querySelector('.bs-stepper'));
+//const stepper = new Stepper(document.querySelector('.bs-stepper'));
 
 var Cart = new ShoppingCart();
-var payments = {};
+var CartCheckout = new Checkout(0, CASH_PAYMENT_METHOD);
 
 function onCartDelete(e) {
     let index = e.getAttribute('data-index');
@@ -55,15 +54,15 @@ function searchProduct(query) {
     POS.search(updateSearchResult, query, 'product');
 }
 
-function searchProductBarcode(query) {
-    function searchBarcode(response) {
-        if (response.length > 0) {
-            setProduct(response[0].code, response[0].description);
+function searchBarcode(query) {
+    function setProductByBarcode(response) {
+        if (undefined !== response && false !== response) {
+            setProduct(response.code, response.description);
         }
         barcodeInputBox.value = '';
     }
 
-    POS.searchBarcode(searchBarcode(), query);
+    POS.searchBarcode(setProductByBarcode, query);
 }
 
 function setProduct(code, description) {
@@ -74,6 +73,7 @@ function setProduct(code, description) {
 function setCustomer(code, description) {
     document.getElementById('codcliente').value = code;
     document.getElementById('customerSearchBox').value = description;
+    Cart.setCustomer(code);
 
     $('.modal').modal('hide');
 }
@@ -87,13 +87,24 @@ function updateCart() {
     POS.recalculate(updateCartData, Cart.lines, salesForm);
 }
 
+function updateCartTotals() {
+    salesForm.cartTotalDisplay.value = Cart.doc.total;
+    salesForm.cartTaxesDisplay.value = Cart.doc.totaliva;
+    salesForm.cartNetoDisplay.value = Cart.doc.netosindto;
+
+    document.getElementById('cartNeto').value = Cart.doc.netosindto;
+    document.getElementById('cartTaxes').value = Cart.doc.totaliva;
+    document.getElementById('checkoutTotal').textContent = Cart.doc.total;
+}
+
 function updateCartView(data) {
     const elements = salesForm.elements;
 
     for(let i = 0; i < elements.length; i++) {
         const element = elements[i];
+        const excludedElements = ['token', 'codcliente', 'customerSearchBox'];
 
-        if (element.name ) {
+        if (element.name && false === excludedElements.includes(element.name)) {
             const value = data.doc[element.name];
             switch (element.type) {
                 case "checkbox" :
@@ -104,61 +115,44 @@ function updateCartView(data) {
             }
         }
     }
-
-    salesForm.cartTotalDisplay.value = data.doc.total;
-    salesForm.cartTaxesDisplay.value = data.doc.totaliva;
-    salesForm.cartNetoDisplay.value = data.doc.netosindto;
-
-    document.getElementById('cartNeto').value = data.doc.netosindto;
-    document.getElementById('cartTaxes').value = data.doc.totaliva;
-    document.getElementById('cartTotal').value = data.doc.total;
-
     cartContainer.innerHTML = cartTemplate(data, templateConfig);
-    Checkout.setPayment(100,"Efectivo");
-    console.log(Checkout.payments);
-
+    updateCartTotals();
     $('.modal').modal('hide');
 }
 
 function recalculatePaymentAmount() {
     const checkoutButton = document.getElementById('checkoutButton');
-    let paymentAmount = document.getElementById('paymentAmount');
-    let paymentChange = document.getElementById('paymentChange');
-    let paymentMethod = document.getElementById("paymentMethod");
-    let total = parseFloat(document.getElementById('total').value);
+    const paymentAmount = document.getElementById('paymentAmount');
+    const paymentMethod = document.getElementById("paymentMethod");
 
-    let paymentReturn = (paymentAmount.value - total) || 0;
+    CartCheckout.recalculatePayment(paymentAmount.value, paymentMethod.value);
 
-    if (paymentMethod.value !== CASH_PAYMENT_METHOD) {
-        if (paymentReturn > 0) {
-            paymentReturn = 0;
-            paymentAmount.value = POS.formatNumber(total);
-        }
-    }
-    paymentChange.value = POS.formatNumber(paymentReturn);
-    if (paymentReturn >= 0) {
+    if (CartCheckout.change >= 0) {
+        paymentAmount.value = CartCheckout.payment;
         checkoutButton.removeAttribute('disabled');
     } else {
         checkoutButton.setAttribute('disabled', 'disabled');
     }
+
+    document.getElementById('paymentReturn').textContent = POS.roundDecimals(CartCheckout.change);
+    document.getElementById('paymentOnHand').textContent = POS.roundDecimals(CartCheckout.payment);
 }
 
 function onCheckoutConfirm() {
     let paymentData = {};
     paymentData.amount = document.getElementById('paymentAmount').value;
-    paymentData.change = document.getElementById('paymentChange').value;
+    paymentData.change = CartCheckout.change || 0;
     paymentData.method = document.getElementById("paymentMethod").value;
 
     document.getElementById("action").value = 'save-document';
     document.getElementById("lines").value = JSON.stringify(Cart.lines);
     document.getElementById("payments").value = JSON.stringify(paymentData);
-    document.getElementById("codpago").value = JSON.stringify(paymentData.method);
+    document.getElementById("codpago").value = paymentData.method;
     salesForm.submit();
 }
 
 function onCheckoutModalShow() {
-    /*let modalTitle = document.getElementById('dueAmount');
-    modalTitle.textContent = document.getElementById('total').value;*/
+    CartCheckout.total = Cart.doc.total;
 }
 
 function onPauseOperation() {
@@ -179,7 +173,7 @@ function resumePausedDocument(code) {
 
 $(document).ready(function () {
     onScan.attachTo(barcodeInputBox, {
-        onScan: function(code) { searchProductBarcode(code); }
+        onScan: function(code) { searchBarcode(code); }
     });
 
     $('[data-toggle="offcanvas"]').on('click', function () {
@@ -256,6 +250,7 @@ cartContainer.addEventListener('click', function(e) {
     }
 }, true);
 
+/*
 document.querySelectorAll('.btn-next').forEach(item => {
     item.addEventListener('click', event => {
         stepper.next();
@@ -266,4 +261,4 @@ document.querySelectorAll('.btn-previus').forEach(item => {
     item.addEventListener('click', event => {
         stepper.previous();
     });
-});
+});*/

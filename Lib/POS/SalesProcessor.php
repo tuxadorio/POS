@@ -18,10 +18,30 @@ class SalesProcessor
 {
     const MODEL_NAMESPACE = '\\FacturaScripts\\Dinamic\\Model\\';
 
-    protected $data;
+    /**
+     * @var BusinessDocument
+     */
     protected $document;
+
+    /**
+     * @var BusinessDocumentFormTools
+     */
     protected $tools;
-    private $cart;
+
+    /**
+     * @var array
+     */
+    protected $documentData;
+
+    /**
+     * @var array
+     */
+    protected $linesData;
+
+    /**
+     * @var array
+     */
+    protected $paymentsData;
 
     /**
      * SalesLinesProcessor constructor.
@@ -54,85 +74,26 @@ class SalesProcessor
      *
      * @param array $data
      */
-    private function setDocumentData(array $data)
+    protected function setDocumentData(array $data)
     {
-        if ($data['action'] !== ('recalculate-document')) {
-            $this->data['lines'] = json_decode($data['lines'], true);
-            $this->data['payments'] = json_decode($data['payments'], true);
+        if ('recalculate-document' !== $data['action']) {
+            $this->linesData = json_decode($data['lines'], true);
+            $this->paymentsData = json_decode($data['payments'], true);
 
-            unset(
-                $data['lines'], $data['payments'], $data['token'], $data['tipo-documento'],
-                $data['total'], $data['totaliva'], $data['totalirpf'], $data['neto']);
-            $this->data['doc'] = $data;
-            return;
-        }
-        $this->data = $this->getBusinessFormData($data);
-    }
-
-    private function getBusinessFormData($formdata)
-    {
-        $data = ['custom' => [], 'final' => [], 'form' => [], 'lines' => [], 'subject' => []];
-        foreach ($formdata as $field => $value) {
-            switch ($field) {
-                case 'codpago':
-                case 'codserie':
-                    $data['custom'][$field] = $value;
-                    break;
-
-                case 'dtopor1':
-                case 'dtopor2':
-                case 'idestado':
-                    $data['final'][$field] = $value;
-                    break;
-
-                case 'lines':
-                    $data['lines'] = $this->processFormLines($value);
-                    break;
-
-                case 'codcliente':
-                    $data['subject'][$field] = $value;
-                    break;
-
-                default:
-                    $data['form'][$field] = $value;
-            }
+            unset($data['total'], $data['totaliva'], $data['totalirpf'], $data['neto']);
+        } else {
+            $this->linesData = $data['lines'] ?? [];
         }
 
-        return $data;
-    }
+        unset($data['action'], $data['lines'], $data['payments']);
 
-    /**
-     * Process form lines to add missing data from data form.
-     * Also adds order column.
-     *
-     * @param array $formLines
-     *
-     * @return array
-     */
-    private function processFormLines(array $formLines)
-    {
-        $newLines = [];
-        $order = count($formLines);
-        foreach ($formLines as $line) {
-            if (is_array($line)) {
-                $line['orden'] = $order;
-                $newLines[] = $line;
-                $order--;
-                continue;
-            }
-
-            /// empty line
-            $newLines[] = ['orden' => $order];
-            $order--;
-        }
-
-        return $newLines;
+        $this->documentData = $data;
     }
 
     /**
      * @return BusinessDocument document
      */
-    public function getDocument()
+    public function getDocument(): BusinessDocument
     {
         return $this->document;
     }
@@ -140,96 +101,53 @@ class SalesProcessor
     /**
      * @return array
      */
-    public function getPaymentsData()
+    public function getPayments()
     {
-        return $this->data['payments'];
+        return $this->paymentsData ?? [];
     }
 
     /**
      * Recalculate the document total based on lines.
      *
-     * @param array $request
      * @return string
      */
-    public function recalculateDocument()
+    public function recalculate(): string
     {
-        $merged = array_merge($this->data['custom'], $this->data['final'], $this->data['form'], $this->data['subject']);
-        $this->loadFromData($this->document, $merged);
+        //Load document data
+        $this->document->loadFromData($this->documentData);
 
-        /*update subject*/
+        // Update subject
         $this->document->updateSubject();
 
-        /*recalculate*/
-        return $this->tools->recalculateForm($this->document, $this->data['lines']);
-    }
-
-    /**
-     * Verifies the structure and loads into the model the given data array
-     *
-     * @param BusinessDocument $model
-     * @param array $data
-     */
-    protected function loadFromData(BusinessDocument &$model, array &$data)
-    {
-        $model->loadFromData($data, ['action']);
+        // Recalculate
+        return $this->tools->recalculateForm($this->document, $this->linesData);
     }
 
     /**
      * Saves the document.
      *
+     * @param bool $pause
      * @return bool
      */
-    public function saveDocument()
+    public function saveDocument($pause = false): bool
     {
-        $this->loadFromData($this->document, $this->data['doc']);
+        $this->document->loadFromData($this->documentData);
 
         if (false === $this->document->updateSubject()) {
             return false;
         }
 
-        if ($this->document->save()) {
-            foreach ($this->data['lines'] as $line) {
-                $newLine = $this->document->getNewLine($line);
-
-                if (false === $newLine->save()) {
-                    $this->document->delete();
-                    return false;
+        if (true === $pause) {
+            $previusLines = $this->document->getLines();
+            if (false === empty($previusLines)) {
+                foreach ($previusLines as $line) {
+                    $line->delete();
                 }
             }
-            $this->tools->recalculate($this->document);
-
-            if ($this->document->save()) {
-                return true;
-            }
-
-            $this->document->delete();
-        }
-
-        return false;
-    }
-
-    /**
-     * Saves the document.
-     *
-     * @return bool
-     */
-    public function pauseDocument()
-    {
-        $this->loadFromData($this->document, $this->data['doc']);
-
-        if (false === $this->document->updateSubject()) {
-            return false;
-        }
-
-        $previusLines = $this->document->getLines();
-        if (false === empty($previusLines)) {
-            foreach ($previusLines as $line) {
-                $line->delete();
-            }
         }
 
         if ($this->document->save()) {
-            foreach ($this->data['lines'] as $line) {
+            foreach ($this->linesData as $line) {
                 $newLine = $this->document->getNewLine($line);
 
                 if (false === $newLine->save()) {
