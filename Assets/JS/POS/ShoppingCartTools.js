@@ -4,6 +4,15 @@
  */
 const AjaxRequestUrl = "POS";
 
+export function deletePausedTransaction(code, form) {
+    const elements = form.elements;
+
+    elements.action.value = 'delete-paused-document';
+    elements.idpausada.value = code;
+
+    form.submit();
+}
+
 export function pauseDocument(lines, form) {
     if (lines.length <= 0) {
         return false;
@@ -16,108 +25,35 @@ export function pauseDocument(lines, form) {
     form.submit();
 }
 
-export function resumeDocument(callback, code) {
+export function resumeTransaction(callback, code) {
     let data = {
-        action: "resume-document",
+        action: "transaction-resume",
         code: code
     };
 
-    $.ajax({
-        type: "POST",
-        url: AjaxRequestUrl,
-        dataType: "json",
-        data: data,
-        success: callback,
-        error: function (xhr) {
-            console.error('Error al cargar la venta', xhr.responseText);
-        }
-    });
+    baseAjaxRequest(callback, data, 'Error al cargar la venta');
 }
 
 export function recalculate(callback, lines, form) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
 
-    data.action = "recalculate-document";
+    data.action = "transaction-recalculate";
     data.lines = lines;
 
-    $.ajax({
-        type: "POST",
-        url: AjaxRequestUrl,
-        dataType: "json",
-        data: data,
-        success: callback,
-        error: function (xhr) {
-            console.error('Error al recalcular las lineas', xhr.responseText);
-        }
-    });
-}
-
-export function search(callback, query, target) {
-    let data = {
-        action: "custom-search",
-        query: query,
-        target: target
-    };
-    $.ajax({
-        type: "POST",
-        url: AjaxRequestUrl,
-        dataType: "json",
-        data: data,
-        success: callback,
-        error: function (xhr) {
-            console.error('Error searching', xhr.responseText);
-            return false;
-        }
-    });
+    baseAjaxRequest(callback, data, 'Error al recalcular las lineas');
 }
 
 export function searchBarcode(callback, query) {
-    let data = {
-        action: "barcode-search",
-        query: query
-    };
-
-    console.log(query);
-    $.ajax({
-        type: "POST",
-        url: AjaxRequestUrl,
-        dataType: "json",
-        data: data,
-        success: callback,
-        error: function (xhr) {
-            console.error('Error searching by barcode', xhr.responseText);
-        }
-    });
+    baseSearch(callback, query, 'search-barcode');
 }
 
-export function searchBarcode2(callback, query) {
-    let data = {
-        action: "barcode-search",
-        query: query
-    };
+export function searchCustomer(callback, query) {
+    baseSearch(callback, query, 'search-customer');
+}
 
-    console.log(query);
-    $.ajax({
-        type: "POST",
-        url: AjaxRequestUrl,
-        dataType: "json",
-        data: data,
-        success: function (response) {
-            if (false === response.length) {
-                callback = false;
-                return;
-            }
-
-            callback = {
-                code: response[0].code,
-                description: response[0].description
-            };
-        },
-        error: function (xhr) {
-            console.error('Error searching by barcode', xhr.responseText);
-        }
-    });
+export function searchProduct(callback, query) {
+    baseSearch(callback, query, 'search-product');
 }
 
 // Helper functions
@@ -136,4 +72,35 @@ export function testResponseTime(startTime, label = 'Exec time:') {
     //Convert milliseconds to seconds.
     let seconds = time / 100;
     console.log(label, seconds.toFixed(3));
+}
+
+function baseSearch(callback, query, action) {
+    let data = {
+        action: action,
+        query: query
+    };
+    $.ajax({
+        type: "POST",
+        url: AjaxRequestUrl,
+        dataType: "json",
+        data: data,
+        success: callback,
+        error: function (xhr) {
+            console.error('Error searching', xhr.responseText);
+            return false;
+        }
+    });
+}
+
+function baseAjaxRequest(callback, data, emessage) {
+    $.ajax({
+        type: "POST",
+        url: AjaxRequestUrl,
+        dataType: "json",
+        data: data,
+        success: callback,
+        error: function (xhr) {
+            console.error(emessage, xhr.responseText);
+        }
+    });
 }

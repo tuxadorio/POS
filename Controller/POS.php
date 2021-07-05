@@ -3,19 +3,25 @@
  * This file is part of POS plugin for FacturaScripts
  * Copyright (C) 2020 Juan José Prieto Dzul <juanjoseprieto88@gmail.com>
  */
+
 namespace FacturaScripts\Plugins\POS\Controller;
 
 use FacturaScripts\Core\Base\Controller;
+use FacturaScripts\Core\Base\ControllerPermissions;
 use FacturaScripts\Core\Model\Serie;
 use FacturaScripts\Dinamic\Lib\POS\PrintProcessor;
 use FacturaScripts\Dinamic\Lib\POS\SalesDataGrid;
-use FacturaScripts\Dinamic\Lib\POS\SalesProcessor;
 use FacturaScripts\Dinamic\Lib\POS\SalesSession;
 use FacturaScripts\Dinamic\Model\Cliente;
 use FacturaScripts\Dinamic\Model\DenominacionMoneda;
 use FacturaScripts\Dinamic\Model\FormaPago;
-use FacturaScripts\Dinamic\Model\Variante;
-use function json_encode;
+use FacturaScripts\Dinamic\Model\User;
+use FacturaScripts\Plugins\POS\Lib\POS\Sales\Customer;
+use FacturaScripts\Plugins\POS\Lib\POS\Sales\Product;
+use FacturaScripts\Plugins\POS\Lib\POS\Sales\Order;
+use FacturaScripts\Plugins\POS\Lib\POS\Sales\OrderRequest;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Controller to process Point of Sale Operations
@@ -24,6 +30,8 @@ use function json_encode;
  */
 class POS extends Controller
 {
+    const DEFAULT_TRANSACTION = 'FacturaCliente';
+    const PAUSED_TRANSACTION = 'OperacionPausada';
 
     /**
      * @var Cliente
@@ -53,7 +61,6 @@ class POS extends Controller
      */
     public function privateCore(&$response, $user, $permissions)
     {
-        /** @noinspection PhpParamsInspection */
         parent::privateCore($response, $user, $permissions);
         $this->setTemplate(false);
 
@@ -83,23 +90,27 @@ class POS extends Controller
      * @param string $action
      * @return bool
      */
-    private function execPreviusAction(string $action)
+    private function execPreviusAction(string $action): bool
     {
         switch ($action) {
-            case 'custom-search':
-                $this->searchText();
-                return false;
-
-            case 'barcode-search':
+            case 'search-barcode':
                 $this->searchBarcode();
                 return false;
 
-            case 'recalculate-document':
-                $this->recalculateTransaction();
+            case 'search-customer':
+                $this->searchCustomer();
                 return false;
 
-            case 'resume-document':
+            case 'search-product':
+                $this->searchProduct();
+                return false;
+
+            case 'transaction-resume':
                 $this->resumeTransaction();
+                return false;
+
+            case 'transaction-recalculate':
+                $this->recalculateTransaction();
                 return false;
 
             default:
@@ -107,41 +118,47 @@ class POS extends Controller
         }
     }
 
-    private function searchText()
+    protected function searchBarcode()
     {
-        $query = $this->request->request->get('query');
-        $target = $this->request->request->get('target');
+        $producto = new Product();
+        $barcode = $this->request->request->get('query');
 
-        switch ($target) {
-            case 'customer':
-                $result = (new Cliente())->codeModelSearch($query);
-                break;
-
-            case 'product':
-                $query = str_replace(" ", "%", $query);
-                $result = (new Variante())->codeModelSearch($query, 'referencia');
-                break;
-        }
-        $this->response->setContent(json_encode($result));
+        $this->response->setContent($producto->searchBarcode($barcode));
     }
 
-    private function searchBarcode()
+    protected function searchCustomer()
     {
+        $customer = new Customer();
         $query = $this->request->request->get('query');
-        $result = (new Variante())->codeModelSearch($query, 'referencia');
 
-        $response = $result ? $result[0] : false;
-
-        $this->response->setContent(json_encode($response));
+        $this->response->setContent($customer->searchCustomer($query));
     }
 
-    private function recalculateTransaction()
+    protected function searchProduct()
     {
-        $data = $this->request->request->all();
-        $modelName = 'FacturaCliente';
+        $product = new Product();
+        $query = $this->request->request->get('query');
 
-        $salesProcessor = new SalesProcessor($modelName, $data);
-        $result = $salesProcessor->recalculate();
+        $this->response->setContent($product->searchByText($query));
+    }
+
+    /**
+     * Load a paused document
+     */
+    protected function resumeTransaction()
+    {
+        $code = $this->request->request->get('code', '');
+        $result = $this->session->loadPausedTransaction($code);
+
+        $this->response->setContent($result);
+    }
+
+    protected function recalculateTransaction()
+    {
+        $request = new OrderRequest($this->request);
+        $transaction = new Order($request);
+
+        $result = $transaction->recalculate();
 
         $this->response->setContent($result);
     }
@@ -178,7 +195,11 @@ class POS extends Controller
                 break;
 
             case 'save-document':
-                $this->saveTransaction();
+                $this->saveOrder();
+                break;
+
+            case 'delete-paused-document':
+                $this->deletePausedTransaction();
                 break;
 
             default:
@@ -195,62 +216,54 @@ class POS extends Controller
     }
 
     /**
+     * @return void;
+     */
+    protected function printCashup()
+    {
+        $ticketWidth = $this->session->terminal()->anchopapel;
+        if (PrintProcessor::printCashup($this->session->getArqueo(), $this->empresa, $ticketWidth)) {
+            $values = [
+                '%ticket%' => 'Cierre caja',
+                '%code%' => 'cashup'
+            ];
+            $this->toolBox()->i18nLog()->info('printing-ticket', $values);
+            return;
+        }
+
+        $this->toolBox()->i18nLog()->warning('error-printing-ticket');
+    }
+
+    /**
      * Process sales.
      *
      * @return void
      */
     private function holdTransaction()
     {
-        $data = $this->request->request->all();
-        $modelName = 'OperacionPausada';
+        if (false === $this->validateSaveRequest($this->request)) return;
 
-        if (false === $this->validateSaveRequest($data)) return;
+        $this->request->request->set('tipo-documento', self::PAUSED_TRANSACTION);
+        $request = new OrderRequest($this->request);
+        $transaction = new Order($request);
 
-        $salesProcessor = new SalesProcessor($modelName, $data);
-        if ($salesProcessor->saveDocument(true)) {
+        if ($transaction->hold()) {
             $this->toolBox()->i18nLog()->info('operation-is-paused');
         }
     }
 
     /**
-     * Process sales.
-     *
-     * @return void
-     */
-    protected function saveTransaction()
-    {
-        $data = $this->request->request->all();
-        $modelName = $data['tipo-documento'];
-        $pausada = $data['idpausada'];
-
-        $transactionModel = $this->request->request->get('tipo-documento', 'FacturaCliente');
-
-        if (false === $this->validateSaveRequest($data)) return;
-
-        $salesProcessor = new SalesProcessor($transactionModel, $data);
-        if ($salesProcessor->saveDocument()) {
-            $document = $salesProcessor->getDocument();
-            $payments[] = $salesProcessor->getPayments();
-
-            $this->session->storeOperation($document);
-            $this->session->savePayments($payments);
-            $this->session->updatePausedTransaction($pausada);
-            $this->printTicket($document);
-        }
-    }
-
-    /**
-     * @param $data
+     * @param Request $request
      * @return bool
      */
-    protected function validateSaveRequest($data)
+    protected function validateSaveRequest(Request $request): bool
     {
         if (false === $this->permissions->allowUpdate) {
             $this->toolBox()->i18nLog()->warning('not-allowed-modify');
             return false;
         }
 
-        $token = $data['token'];
+        $token = $request->request->get('token');
+
         if (!empty($token) && $this->multiRequestProtection->tokenExist($token)) {
             $this->toolBox()->i18nLog()->warning('duplicated-request');
             return false;
@@ -259,21 +272,21 @@ class POS extends Controller
     }
 
     /**
-     * @return void;
+     * Process sales.
+     *
+     * @return void
      */
-    private function printCashup()
+    protected function saveOrder()
     {
-        $ticketWidth = $this->session->terminal()->anchopapel;
-        if (PrintProcessor::printCashup($this->session->getArqueo(), $this->empresa, $ticketWidth)) {
-            $values = [
-                '%ticket%' => 'Cierre caja',
-                '%code%'=>'cashup'
-            ];
-            $this->toolBox()->i18nLog()->info('printing-ticket', $values);
-            return;
-        }
+        if (false === $this->validateSaveRequest($this->request)) return;
 
-        $this->toolBox()->i18nLog()->warning('error-printing-ticket');
+        $orderRequest = new OrderRequest($this->request);
+        $order = new Order($orderRequest);
+
+        if ($order->save()) {
+            $this->session->storeTransaction($order);
+            $this->printTicket($order->getDocument());
+        }
     }
 
     /**
@@ -286,7 +299,7 @@ class POS extends Controller
         if (PrintProcessor::printDocument($document, $ticketWidth)) {
             $values = [
                 '%ticket%' => $document->codigo,
-                '%code%'=>$document->modelClassName()
+                '%code%' => $document->modelClassName()
             ];
             $this->toolBox()->i18nLog()->info('printing-ticket', $values);
             return;
@@ -296,11 +309,20 @@ class POS extends Controller
     }
 
     /**
+     * Set a paused document as complete to remove from list
+     */
+    protected function deletePausedTransaction()
+    {
+        $code = $this->request->request->get('idpausada', '');
+        $this->session->updatePausedTransaction($code);
+    }
+
+    /**
      * Returns basic page attributes
      *
      * @return array
      */
-    public function getPageData()
+    public function getPageData(): array
     {
         $pagedata = parent::getPageData();
         $pagedata['title'] = 'point-of-sale';
@@ -316,9 +338,14 @@ class POS extends Controller
      *
      * @return string
      */
-    public function cashPaymentMethod(): string
+    public function cashPaymentMethod(): ?string
     {
-        return $this->toolBox()->appSettings()->get('pointofsale', 'fpagoefectivo');
+        return $this->getSettingValue('fpagoefectivo');
+    }
+
+    protected function getSettingValue(string $key)
+    {
+        return $this->toolBox()->appSettings()->get('pointofsale', $key);
     }
 
     /**
@@ -328,10 +355,9 @@ class POS extends Controller
      */
     public function availablePaymentMethods(): array
     {
-        $settings = $this->toolBox()->appSettings();
         $formasPago = [];
 
-        $formasPagoCodeList = explode('|', $settings->get('pointofsale', 'formaspago'));
+        $formasPagoCodeList = explode('|', $this->getSettingValue('formaspago'));
         foreach ($formasPagoCodeList as $value) {
             $formasPago[] = (new FormaPago())->get($value);
         }
@@ -344,7 +370,7 @@ class POS extends Controller
      *
      * @return array
      */
-    public function getGridHeaders()
+    public function getGridHeaders(): array
     {
         return SalesDataGrid::getDataGrid($this->user);
     }
@@ -354,7 +380,7 @@ class POS extends Controller
      *
      * @return array
      */
-    public function getDenominations()
+    public function getDenominations(): array
     {
         return (new DenominacionMoneda())->all([], ['valor' => 'ASC']);
     }
@@ -364,12 +390,12 @@ class POS extends Controller
      *
      * @return string
      */
-    public function requestToken()
+    public function requestToken(): string
     {
         return $this->multiRequestProtection->newToken();
     }
 
-    public function customFieldList() : array
+    public function customFieldList(): array
     {
         $path = FS_FOLDER . '/Dinamic/View/POS/Block/CustomField/';
         $list = scandir($path);
@@ -379,16 +405,5 @@ class POS extends Controller
         }
 
         return [];
-    }
-
-    /**
-     * Load a paused document
-     */
-    private function resumeTransaction()
-    {
-        $code = $this->request->request->get('code', '');
-        $result = $this->session->loadPausedTransaction($code);
-
-        $this->response->setContent($result);
     }
 }

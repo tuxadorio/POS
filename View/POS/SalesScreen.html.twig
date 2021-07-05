@@ -24,7 +24,7 @@
     {{ include('POS/Modal/Cashup.html.twig') }}
     {{ include('POS/Modal/Checkout.html.twig') }}
     {{ include('POS/Modal/CustomerSearch.html.twig') }}
-    {{ include('POS/Modal/History.html.twig') }}
+    {{ include('POS/Modal/LastOrders.html.twig') }}
     {{ include('POS/Modal/PausedOperations.html.twig') }}
     {{ include('POS/Modal/ProductSearch.html.twig') }}
     {{ include('POS/Modal/ResetData.html.twig') }}
@@ -35,10 +35,10 @@
         {{ pos.cartTemplateSource(grid.columns) }}
     </script>
     <script id="productTemplateSource" type="text/template">
-        {{ pos.productTemplateSource() }}
+        {{ pos.productSearchTemplate() }}
     </script>
     <script id="customerTemplateSource" type="text/template">
-        {{ pos.customerTemplateSource() }}
+        {{ pos.customerSearchTemplate() }}
     </script>
     <script type="text/javascript">
         const CASH_PAYMENT_METHOD = "{{ fsc.cashPaymentMethod() }}";
@@ -49,5 +49,5 @@
     <script src="{{ asset('Plugins/POS/Assets/JS/modules/eta.min.js') }}"></script>
     <script src="{{ asset('Plugins/POS/Assets/JS/modules/onscan.min.js') }}"></script>
     <script src="{{ asset('Plugins/POS/Assets/JS/modules/bs-stepper.min.js') }}"></script>
-    <script type="module" src="{{ asset('Plugins/POS/Assets/JS/pos.app.js') }}"></script>
+    <script type="module" src="{{ asset('Plugins/POS/Assets/JS/POS/App.js') }}"></script>
 {% endblock %}

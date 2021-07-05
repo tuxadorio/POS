@@ -7,17 +7,19 @@ namespace FacturaScripts\Plugins\POS\Lib\POS;
 
 use FacturaScripts\Core\Base\DataBase\DataBaseWhere;
 use FacturaScripts\Core\Base\ToolBox;
-use FacturaScripts\Core\Model\Base\BusinessDocument;
 use FacturaScripts\Dinamic\Model\OperacionPausada;
 use FacturaScripts\Dinamic\Model\OperacionPOS;
 use FacturaScripts\Dinamic\Model\SesionPOS;
 use FacturaScripts\Dinamic\Model\TerminalPOS;
 use FacturaScripts\Dinamic\Model\User;
+use FacturaScripts\Plugins\POS\Lib\POS\Sales\Order;
 
 class SalesSession
 {
     private $arqueo;
-    private $lastOperation;
+
+    private $currentOrder;
+
     private $opened;
     private $terminal;
     private $user;
@@ -144,21 +146,6 @@ class SalesSession
         return false;
     }
 
-    public function storeOperation(BusinessDocument $document)
-    {
-        $operation = new OperacionPOS();
-        $operation->codigo = $document->codigo;
-        $operation->codcliente = $document->codcliente;
-        $operation->fecha = $document->fecha;
-        $operation->iddocumento = $document->primaryColumnValue();
-        $operation->idsesion = $this->arqueo->idsesion;
-        $operation->tipodoc = $document->modelClassName();
-        $operation->total = $document->total;
-
-        $operation->save();
-        $this->lastOperation = $operation;
-    }
-
     public function loadHistory()
     {
         $operation = new OperacionPOS();
@@ -201,12 +188,58 @@ class SalesSession
         }
     }
 
-    public function savePayments(array $payments)
+    protected function savePayments(array $payments)
     {
         $processor = new PaymentsProcessor($payments);
-        $processor->savePayments($this->lastOperation, $this->arqueo);
+        $processor->savePayments($this->currentOrder, $this->arqueo);
 
         $this->arqueo->saldoesperado += $processor->getCashPaymentAmount();
         $this->arqueo->save();
+    }
+
+    public function storeTransaction(Order $order)
+    {
+        $this->currentOrder = new OperacionPOS();
+        $document = $order->getDocument();
+
+        $this->currentOrder->codigo = $document->codigo;
+        $this->currentOrder->codcliente = $document->codcliente;
+        $this->currentOrder->fecha = $document->fecha;
+        $this->currentOrder->iddocumento = $document->primaryColumnValue();
+        $this->currentOrder->idsesion = $this->arqueo->idsesion;
+        $this->currentOrder->tipodoc = $document->modelClassName();
+        $this->currentOrder->total = $document->total;
+
+        $this->currentOrder->save();
+
+        $this->savePayments($order->getPayments());
+
+        if ($document->idpausada) {
+            $this->updatePausedTransaction($document->idpausada);
+        }
+    }
+
+    public function placeOrder(Order $order)
+    {
+        if (false === $order->save()) return;
+
+        $this->currentOrder = new OperacionPOS();
+        $document = $order->getDocument();
+
+        $this->currentOrder->codigo = $document->codigo;
+        $this->currentOrder->codcliente = $document->codcliente;
+        $this->currentOrder->fecha = $document->fecha;
+        $this->currentOrder->iddocumento = $document->primaryColumnValue();
+        $this->currentOrder->idsesion = $this->arqueo->idsesion;
+        $this->currentOrder->tipodoc = $document->modelClassName();
+        $this->currentOrder->total = $document->total;
+
+        $this->currentOrder->save();
+
+        $this->savePayments($order->getPayments());
+
+        if ($document->idpausada) {
+            $this->updatePausedTransaction($document->idpausada);
+        }
     }
 }
